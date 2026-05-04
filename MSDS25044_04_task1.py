@@ -1,4 +1,6 @@
-# Complete Transformer QA System - All in One
+
+#Complete Transformer QA System - All in One
+#This file contains ALL code from data loading to testing and visualization.
 
 import os
 import re
@@ -19,9 +21,7 @@ import matplotlib.pyplot as plt
 from sacrebleu import corpus_bleu
 
 
-# ============================================
-# PART 1: TRANSFORMER MODEL (from scratch)
-# ============================================
+# PART 1: TRANSFORMER MODEL 
 
 class ScaledDotProductAttention(nn.Module):
     def __init__(self):
@@ -178,9 +178,7 @@ class TransformerForQA(nn.Module):
         return generated_text
 
 
-# ============================================
 # PART 2: DATA UTILS
-# ============================================
 
 class StackOverflowDataset(Dataset):
     def __init__(self, data, tokenizer, max_seq_len=256):
@@ -229,6 +227,7 @@ def load_and_preprocess_data(data_path, max_samples=15000):
     answers_df = pd.read_csv(f"{data_path}/Answers.csv", encoding='latin1')
     print(f"Loaded {len(questions_df)} questions and {len(answers_df)} answers")
     
+    # Merge questions with accepted answers
     if 'AcceptedAnswerId' in questions_df.columns and 'Id' in answers_df.columns:
         merged_df = questions_df.merge(
             answers_df[['Id', 'Body']],
@@ -268,11 +267,19 @@ def create_data_loaders(data_df, tokenizer_name="openai-community/openai-gpt",
                         batch_size=16, max_seq_len=256, val_split=0.15, test_split=0.15):
     print(f"Loading tokenizer: {tokenizer_name}")
     tokenizer = AutoTokenizer.from_pretrained(tokenizer_name)
+    
+    # FIX: Set padding token - THIS IS THE IMPORTANT FIX
+    if tokenizer.pad_token is None:
+        if tokenizer.eos_token is not None:
+            tokenizer.pad_token = tokenizer.eos_token
+        else:
+            tokenizer.add_special_tokens({'pad_token': '[PAD]'})
+    
+    # Add custom tokens
     special_tokens = {'additional_special_tokens': ['<Usama_MSDS25044>', '</Usama_MSDS25044>']}
     tokenizer.add_special_tokens(special_tokens)
-    if tokenizer.pad_token is None:
-        tokenizer.pad_token = tokenizer.eos_token
     
+    # Split data
     train_val_df, test_df = train_test_split(data_df, test_size=test_split, random_state=42)
     train_df, val_df = train_test_split(train_val_df, test_size=val_split/(1-test_split), random_state=42)
     print(f"Train: {len(train_df)}, Val: {len(val_df)}, Test: {len(test_df)}")
@@ -288,9 +295,7 @@ def create_data_loaders(data_df, tokenizer_name="openai-community/openai-gpt",
     return train_loader, val_loader, test_loader, tokenizer
 
 
-# ============================================
 # PART 3: TRAINING FUNCTIONS
-# ============================================
 
 def set_seed(seed=42):
     torch.manual_seed(seed)
@@ -404,15 +409,19 @@ def plot_results(history, save_path):
     
     plt.tight_layout()
     os.makedirs(save_path, exist_ok=True)
-    os.makedirs('../graphs', exist_ok=True)
+    os.makedirs('./graphs', exist_ok=True)
     plt.savefig(f"{save_path}/loss_perplexity_plots.png", dpi=300)
-    plt.savefig("../graphs/loss_perplexity_plots.png", dpi=300)
+    plt.savefig("./graphs/loss_perplexity_plots.png", dpi=300)
     plt.show()
 
 
 def train(args):
+    # Check for GPU
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"Using device: {device}")
+    if torch.cuda.is_available():
+        print(f"GPU: {torch.cuda.get_device_name(0)}")
+    
     set_seed(args.seed)
     
     data_df = load_and_preprocess_data(args.data_path, max_samples=args.max_samples)
@@ -471,15 +480,13 @@ def train(args):
     
     # Compute BLEU on test set
     print("\nComputing BLEU score on test set...")
-    bleu = compute_bleu(model, test_loader, tokenizer, device, max_samples=100)
+    bleu = compute_bleu(model, test_loader, tokenizer, device, max_samples=args.max_test_samples)
     print(f"Test BLEU Score: {bleu:.2f}")
     
     return model, tokenizer, history
 
 
-# ============================================
 # PART 4: TESTING FUNCTIONS
-# ============================================
 
 def interactive_qa(model, tokenizer, device):
     print("\n" + "="*50)
@@ -515,10 +522,16 @@ def test_model(args):
     
     print("Loading tokenizer...")
     tokenizer = AutoTokenizer.from_pretrained("openai-community/openai-gpt")
+    
+    # FIX: Set padding token
+    if tokenizer.pad_token is None:
+        if tokenizer.eos_token is not None:
+            tokenizer.pad_token = tokenizer.eos_token
+        else:
+            tokenizer.add_special_tokens({'pad_token': '[PAD]'})
+    
     special_tokens = {'additional_special_tokens': ['<Usama_MSDS25044>', '</Usama_MSDS25044>']}
     tokenizer.add_special_tokens(special_tokens)
-    if tokenizer.pad_token is None:
-        tokenizer.pad_token = tokenizer.eos_token
     
     print("Loading model...")
     vocab_size = len(tokenizer)
@@ -544,9 +557,7 @@ def test_model(args):
         interactive_qa(model, tokenizer, device)
 
 
-# ============================================
 # PART 5: MAIN
-# ============================================
 
 def main():
     parser = argparse.ArgumentParser(description='Transformer QA System')
@@ -563,6 +574,7 @@ def main():
     parser.add_argument('--max_samples', type=int, default=15000)
     parser.add_argument('--max_seq_len', type=int, default=256)
     parser.add_argument('--batch_size', type=int, default=16)
+    parser.add_argument('--max_test_samples', type=int, default=100)
     
     # Training parameters
     parser.add_argument('--epochs', type=int, default=30)
@@ -576,9 +588,6 @@ def main():
     parser.add_argument('--n_layers', type=int, default=4)
     parser.add_argument('--d_ff', type=int, default=1024)
     parser.add_argument('--dropout', type=float, default=0.1)
-    
-    # Test parameters
-    parser.add_argument('--max_test_samples', type=int, default=100)
     
     args = parser.parse_args()
     
