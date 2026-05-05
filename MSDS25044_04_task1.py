@@ -13,6 +13,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader
 from transformers import AutoTokenizer
+from sacrebleu import corpus_bleu
 from sklearn.model_selection import train_test_split
 from tqdm import tqdm
 import matplotlib.pyplot as plt
@@ -290,6 +291,36 @@ def set_seed(seed=42):
 def compute_perplexity(loss):
     return np.exp(loss)
 
+def compute_bleu(model, dataloader, tokenizer, device, max_samples=50):
+    model.eval()
+    references = []
+    hypotheses = []
+    with torch.no_grad():
+        for i, batch in enumerate(dataloader):
+            if i >= max_samples:
+                break
+            input_ids = batch['input_ids'].to(device)
+            for j in range(min(2, input_ids.size(0))):
+                try:
+                    question_ids = input_ids[j:j+1]
+                    generated_text = model.generate(question_ids, tokenizer, max_new_tokens=50, do_sample=False)
+                    if '</Usama_MSDS25044>' in generated_text:
+                        answer_part = generated_text.split('</Usama_MSDS25044>')[-1].strip()
+                    else:
+                        answer_part = generated_text
+                    ref_text = tokenizer.decode(batch['labels'][j].tolist(), skip_special_tokens=True)
+                    if '</Usama_MSDS25044>' in ref_text:
+                        ref_answer = ref_text.split('</Usama_MSDS25044>')[-1].strip()
+                    else:
+                        ref_answer = ref_text
+                    if len(answer_part) > 10 and len(ref_answer) > 10:
+                        hypotheses.append(answer_part[:150])
+                        references.append([ref_answer[:150]])
+                except:
+                    continue
+    if len(hypotheses) > 0:
+        return corpus_bleu(hypotheses, references).score
+    return 0.0
 
 class EarlyStopping:
     def __init__(self, patience=5):
@@ -437,6 +468,11 @@ def train(args):
         json.dump(history, f)
     
     plot_results(history, args.save_path)
+    print("\nComputing BLEU Score...")
+    bleu_score = compute_bleu(model, test_loader, tokenizer, device, max_samples=30)
+    print(f"\n{'='*50}")
+    print(f"TEST BLEU SCORE: {bleu_score:.2f}")
+    print(f"{'='*50}")
     print(f"\nTraining Complete! Best Val Loss: {best_val_loss:.4f}")
     
     return model, tokenizer, history

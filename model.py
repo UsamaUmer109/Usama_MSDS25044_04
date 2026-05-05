@@ -147,7 +147,7 @@ class TransformerForQA(nn.Module):
         # Create masks
         causal_mask = self._generate_causal_mask(seq_len).to(input_ids.device)
         causal_mask = causal_mask.unsqueeze(0).unsqueeze(0)
-        padding_mask = (input_ids != self.pad_idx).unsqueeze(1).unsqueeze(2)
+        padding_mask = (input_ids != self.pad_idx).float().unsqueeze(1).unsqueeze(2)
         combined_mask = causal_mask & padding_mask
         
         # Embeddings
