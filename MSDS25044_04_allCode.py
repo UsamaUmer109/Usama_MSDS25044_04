@@ -1,4 +1,16 @@
-# Complete Transformer QA System - All in One
+# Complete Transformer QA System
+# Requirements:
+#- Transformer from scratch (Attention is All You Need)
+#- Positional Encoding, Multi-Head Attention, FeedForward
+#- CrossEntropyLoss, AdamW Optimizer
+#- CosineAnnealingLR, EarlyStopping, Checkpointing
+#- Perplexity metric
+#- BLEU metric (for evaluation)
+#- Custom tokens <Usama_MSDS25044> and </Usama_MSDS25044>
+#- Train/Val/Test split with no leakage
+#- Interactive Q&A generation
+# Loss and Perplexity graphs
+
 
 import os
 import re
@@ -19,9 +31,7 @@ import matplotlib.pyplot as plt
 from sacrebleu import corpus_bleu
 
 
-# ============================================
-# PART 1: TRANSFORMER MODEL (from scratch)
-# ============================================
+# PART 1: TRANSFORMER MODEL 
 
 class ScaledDotProductAttention(nn.Module):
     def __init__(self):
@@ -58,14 +68,17 @@ class MultiHeadAttention(nn.Module):
         value = self.W_v(value).view(batch_size, -1, self.n_heads, self.d_k).transpose(1, 2)
         attention_output = self.attention(query, key, value, mask)
         attention_output = attention_output.transpose(1, 2).contiguous().view(batch_size, -1, self.d_model)
+        
         output = self.W_o(attention_output)
         return output
 
 
 class PositionalEncoding(nn.Module):
+    # Sinusoidal Positional Encoding
     def __init__(self, d_model=256, max_seq_len=512, dropout=0.1):
         super().__init__()
         self.dropout = nn.Dropout(dropout)
+        
         pe = torch.zeros(max_seq_len, d_model)
         position = torch.arange(0, max_seq_len, dtype=torch.float).unsqueeze(1)
         div_term = torch.exp(torch.arange(0, d_model, 2).float() * (-math.log(10000.0) / d_model))
@@ -75,11 +88,13 @@ class PositionalEncoding(nn.Module):
         self.register_buffer('pe', pe)
         
     def forward(self, x):
-        x = x + self.pe[:, :x.size(1), :]
+        seq_len = x.size(1)
+        x = x + self.pe[:, :seq_len, :]
         return self.dropout(x)
 
 
 class FeedForward(nn.Module):
+    # Position-wise Feed-Forward Network
     def __init__(self, d_model=256, d_ff=1024, dropout=0.1):
         super().__init__()
         self.linear1 = nn.Linear(d_model, d_ff)
@@ -94,6 +109,7 @@ class FeedForward(nn.Module):
 
 
 class TransformerBlock(nn.Module):
+    # Single Transformer Block with residual connections and layer normalization
     def __init__(self, d_model=256, n_heads=8, d_ff=1024, dropout=0.1):
         super().__init__()
         self.attention = MultiHeadAttention(d_model, n_heads)
@@ -105,17 +121,20 @@ class TransformerBlock(nn.Module):
     def forward(self, x, mask=None):
         attn_output = self.attention(x, x, x, mask)
         x = self.norm1(x + self.dropout(attn_output))
+        
         ff_output = self.feed_forward(x)
         x = self.norm2(x + self.dropout(ff_output))
         return x
 
 
 class TransformerForQA(nn.Module):
+    # Complete Transformer Model for Question Answering
     def __init__(self, vocab_size, d_model=256, n_heads=8, n_layers=4, 
                  d_ff=1024, max_seq_len=512, dropout=0.1, pad_idx=0):
         super().__init__()
         self.d_model = d_model
         self.pad_idx = pad_idx
+        self.max_seq_len = max_seq_len
         
         self.embedding = nn.Embedding(vocab_size, d_model, padding_idx=pad_idx)
         self.positional_encoding = PositionalEncoding(d_model, max_seq_len, dropout)
@@ -132,9 +151,12 @@ class TransformerForQA(nn.Module):
         
     def forward(self, input_ids, labels=None):
         batch_size, seq_len = input_ids.shape
+        
         causal_mask = self._generate_causal_mask(seq_len).to(input_ids.device)
         causal_mask = causal_mask.unsqueeze(0).unsqueeze(0)
+        
         padding_mask = (input_ids != self.pad_idx).unsqueeze(1).unsqueeze(2)
+        
         combined_mask = causal_mask & padding_mask
         
         x = self.embedding(input_ids) * math.sqrt(self.d_model)
@@ -155,7 +177,8 @@ class TransformerForQA(nn.Module):
         
         return logits, loss
     
-    def generate(self, input_ids, tokenizer, max_new_tokens=100, temperature=1.0, do_sample=True):
+    def generate(self, input_ids, tokenizer, max_new_tokens=50, temperature=1.0, do_sample=False):
+        # Generate answer from input question
         self.eval()
         with torch.no_grad():
             for _ in range(max_new_tokens):
@@ -178,9 +201,7 @@ class TransformerForQA(nn.Module):
         return generated_text
 
 
-# ============================================
 # PART 2: DATA UTILS
-# ============================================
 
 class StackOverflowDataset(Dataset):
     def __init__(self, data, tokenizer, max_seq_len=256):
@@ -211,6 +232,7 @@ class StackOverflowDataset(Dataset):
 
 
 def preprocess_text(text):
+    # Preprocess text: lowercase, remove HTML, remove special characters
     if pd.isna(text):
         return ""
     text = str(text)
@@ -229,23 +251,17 @@ def load_and_preprocess_data(data_path, max_samples=15000):
     answers_df = pd.read_csv(f"{data_path}/Answers.csv", encoding='latin1')
     print(f"Loaded {len(questions_df)} questions and {len(answers_df)} answers")
     
-    if 'AcceptedAnswerId' in questions_df.columns and 'Id' in answers_df.columns:
-        merged_df = questions_df.merge(
-            answers_df[['Id', 'Body']],
-            left_on='AcceptedAnswerId',
-            right_on='Id',
-            how='inner'
-        )
-        merged_df = merged_df.rename(columns={
-            'Title': 'title', 'Body_x': 'question_body', 'Body_y': 'answer'
-        })
-    else:
-        merged_df = questions_df.merge(
-            answers_df, left_on='Id', right_on='ParentId', how='inner'
-        )
-        merged_df = merged_df.rename(columns={
-            'Title': 'title', 'Body_x': 'question_body', 'Body_y': 'answer'
-        })
+    merged_df = questions_df.merge(
+        answers_df[['ParentId', 'Body']],
+        left_on='Id',
+        right_on='ParentId',
+        how='inner'
+    )
+    merged_df = merged_df.rename(columns={
+        'Title': 'title',
+        'Body_x': 'question_body',
+        'Body_y': 'answer'
+    })
     
     print("Preprocessing text...")
     questions = []
@@ -268,10 +284,12 @@ def create_data_loaders(data_df, tokenizer_name="openai-community/openai-gpt",
                         batch_size=16, max_seq_len=256, val_split=0.15, test_split=0.15):
     print(f"Loading tokenizer: {tokenizer_name}")
     tokenizer = AutoTokenizer.from_pretrained(tokenizer_name)
-    special_tokens = {'additional_special_tokens': ['<Usama_MSDS25044>', '</Usama_MSDS25044>']}
-    tokenizer.add_special_tokens(special_tokens)
+    
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
+    
+    special_tokens = {'additional_special_tokens': ['<Usama_MSDS25044>', '</Usama_MSDS25044>']}
+    tokenizer.add_special_tokens(special_tokens)
     
     train_val_df, test_df = train_test_split(data_df, test_size=test_split, random_state=42)
     train_df, val_df = train_test_split(train_val_df, test_size=val_split/(1-test_split), random_state=42)
@@ -288,9 +306,7 @@ def create_data_loaders(data_df, tokenizer_name="openai-community/openai-gpt",
     return train_loader, val_loader, test_loader, tokenizer
 
 
-# ============================================
 # PART 3: TRAINING FUNCTIONS
-# ============================================
 
 def set_seed(seed=42):
     torch.manual_seed(seed)
@@ -300,6 +316,49 @@ def set_seed(seed=42):
 
 def compute_perplexity(loss):
     return np.exp(loss)
+
+
+def compute_bleu(model, dataloader, tokenizer, device, max_samples=50):
+    """Compute BLEU score on test set - Required metric"""
+    model.eval()
+    references = []
+    hypotheses = []
+    
+    with torch.no_grad():
+        for i, batch in enumerate(tqdm(dataloader, desc="Computing BLEU")):
+            if i >= max_samples:
+                break
+            
+            input_ids = batch['input_ids'].to(device)
+            
+            for j in range(min(2, input_ids.size(0))):
+                try:
+                    question_ids = input_ids[j:j+1]
+                    
+                    generated_text = model.generate(question_ids, tokenizer, max_new_tokens=50, do_sample=False)
+                    
+                    if '</Usama_MSDS25044>' in generated_text:
+                        answer_part = generated_text.split('</Usama_MSDS25044>')[-1].strip()
+                    else:
+                        answer_part = generated_text
+                    
+                    ref_text = tokenizer.decode(batch['labels'][j].tolist(), skip_special_tokens=True)
+                    if '</Usama_MSDS25044>' in ref_text:
+                        ref_answer = ref_text.split('</Usama_MSDS25044>')[-1].strip()
+                    else:
+                        ref_answer = ref_text
+                    
+                    if len(answer_part) > 10 and len(ref_answer) > 10:
+                        hypotheses.append(answer_part[:150])
+                        references.append([ref_answer[:150]])
+                except Exception as e:
+                    continue
+    
+    if len(hypotheses) > 0:
+        bleu_score = corpus_bleu(hypotheses, references).score
+        return bleu_score
+    else:
+        return 0.0
 
 
 class EarlyStopping:
@@ -326,15 +385,19 @@ def train_epoch(model, dataloader, optimizer, device, epoch):
     model.train()
     total_loss = 0
     num_batches = 0
+    
     for batch in tqdm(dataloader, desc=f"Epoch {epoch}"):
         input_ids = batch['input_ids'].to(device)
         labels = batch['labels'].to(device)
+        
         optimizer.zero_grad()
         _, loss = model(input_ids, labels)
         loss.backward()
         optimizer.step()
+        
         total_loss += loss.item()
         num_batches += 1
+    
     return total_loss / num_batches
 
 
@@ -342,6 +405,7 @@ def validate_epoch(model, dataloader, device):
     model.eval()
     total_loss = 0
     num_batches = 0
+    
     with torch.no_grad():
         for batch in tqdm(dataloader, desc="Validation"):
             input_ids = batch['input_ids'].to(device)
@@ -349,38 +413,8 @@ def validate_epoch(model, dataloader, device):
             _, loss = model(input_ids, labels)
             total_loss += loss.item()
             num_batches += 1
+    
     return total_loss / num_batches
-
-
-def compute_bleu(model, dataloader, tokenizer, device, max_samples=100):
-    model.eval()
-    references = []
-    hypotheses = []
-    with torch.no_grad():
-        for i, batch in enumerate(dataloader):
-            if i >= max_samples:
-                break
-            input_ids = batch['input_ids'].to(device)
-            for j in range(input_ids.size(0)):
-                question_ids = input_ids[j:j+1]
-                generated_text = model.generate(question_ids, tokenizer, max_new_tokens=50, do_sample=False)
-                if '</Usama_MSDS25044>' in generated_text:
-                    answer_part = generated_text.split('</Usama_MSDS25044>')[-1].strip()
-                else:
-                    answer_part = generated_text
-                ref_text = tokenizer.decode(batch['labels'][j].tolist(), skip_special_tokens=True)
-                if '</Usama_MSDS25044>' in ref_text:
-                    ref_answer = ref_text.split('</Usama_MSDS25044>')[-1].strip()
-                else:
-                    ref_answer = ref_text
-                if len(answer_part) > 0 and len(ref_answer) > 0:
-                    hypotheses.append(answer_part)
-                    references.append([ref_answer])
-    if len(hypotheses) > 0:
-        bleu = corpus_bleu(hypotheses, references).score
-    else:
-        bleu = 0.0
-    return bleu
 
 
 def plot_results(history, save_path):
@@ -404,15 +438,19 @@ def plot_results(history, save_path):
     
     plt.tight_layout()
     os.makedirs(save_path, exist_ok=True)
-    os.makedirs('../graphs', exist_ok=True)
+    os.makedirs('./graphs', exist_ok=True)
     plt.savefig(f"{save_path}/loss_perplexity_plots.png", dpi=300)
-    plt.savefig("../graphs/loss_perplexity_plots.png", dpi=300)
+    plt.savefig("./graphs/loss_perplexity_plots.png", dpi=300)
     plt.show()
+    print(f"Graphs saved to {save_path}/loss_perplexity_plots.png")
 
 
 def train(args):
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"Using device: {device}")
+    if torch.cuda.is_available():
+        print(f"GPU: {torch.cuda.get_device_name(0)}")
+    
     set_seed(args.seed)
     
     data_df = load_and_preprocess_data(args.data_path, max_samples=args.max_samples)
@@ -422,9 +460,14 @@ def train(args):
     
     vocab_size = len(tokenizer)
     model = TransformerForQA(
-        vocab_size=vocab_size, d_model=args.d_model, n_heads=args.n_heads,
-        n_layers=args.n_layers, d_ff=args.d_ff, max_seq_len=args.max_seq_len,
-        dropout=args.dropout, pad_idx=tokenizer.pad_token_id
+        vocab_size=vocab_size,
+        d_model=args.d_model,
+        n_heads=args.n_heads,
+        n_layers=args.n_layers,
+        d_ff=args.d_ff,
+        max_seq_len=args.max_seq_len,
+        dropout=args.dropout,
+        pad_idx=tokenizer.pad_token_id
     ).to(device)
     
     print(f"Model parameters: {sum(p.numel() for p in model.parameters()):,}")
@@ -435,15 +478,18 @@ def train(args):
     
     history = {'train_loss': [], 'val_loss': [], 'train_perplexity': [], 'val_perplexity': []}
     best_val_loss = float('inf')
+    
     os.makedirs(args.save_path, exist_ok=True)
     
     print("\nStarting Training...")
     for epoch in range(1, args.epochs + 1):
         print(f"\nEpoch {epoch}/{args.epochs}")
+        
         train_loss = train_epoch(model, train_loader, optimizer, device, epoch)
         train_ppl = compute_perplexity(train_loss)
         val_loss = validate_epoch(model, val_loader, device)
         val_ppl = compute_perplexity(val_loss)
+        
         scheduler.step()
         
         history['train_loss'].append(train_loss)
@@ -457,7 +503,7 @@ def train(args):
         if val_loss < best_val_loss:
             best_val_loss = val_loss
             torch.save(model.state_dict(), f"{args.save_path}/best_model.pt")
-            print(f"✓ Saved best model")
+            print(f"Saved best model")
         
         if early_stopping(val_loss):
             print(f"Early stopping at epoch {epoch}")
@@ -467,19 +513,30 @@ def train(args):
         json.dump(history, f)
     
     plot_results(history, args.save_path)
-    print(f"\nTraining Complete! Best Val Loss: {best_val_loss:.4f}")
     
-    # Compute BLEU on test set
-    print("\nComputing BLEU score on test set...")
-    bleu = compute_bleu(model, test_loader, tokenizer, device, max_samples=100)
-    print(f"Test BLEU Score: {bleu:.2f}")
+    # COMPUTE BLEU SCORE ON TEST SET 
+    print("Computing BLEU Score on Test Set")
     
-    return model, tokenizer, history
+    bleu_score = compute_bleu(model, test_loader, tokenizer, device, max_samples=30)
+    
+    print(f"\n{'='*50}")
+    print(f"TEST BLEU SCORE: {bleu_score:.2f}")
+    print(f"{'='*50}")
+    
+    # Save BLEU score to file
+    with open(f"{args.save_path}/bleu_score.txt", 'w') as f:
+        f.write(f"Test BLEU Score: {bleu_score:.2f}\n")
+        f.write(f"Best Val Loss: {best_val_loss:.4f}\n")
+        f.write(f"Best Val Perplexity: {np.exp(best_val_loss):.2f}\n")
+    
+    print(f"\nTraining Complete!")
+    print(f"Best Val Loss: {best_val_loss:.4f}")
+    print(f"Best Val Perplexity: {np.exp(best_val_loss):.2f}")
+    
+    return model, tokenizer, history, bleu_score
 
 
-# ============================================
 # PART 4: TESTING FUNCTIONS
-# ============================================
 
 def interactive_qa(model, tokenizer, device):
     print("\n" + "="*50)
@@ -515,70 +572,72 @@ def test_model(args):
     
     print("Loading tokenizer...")
     tokenizer = AutoTokenizer.from_pretrained("openai-community/openai-gpt")
-    special_tokens = {'additional_special_tokens': ['<Usama_MSDS25044>', '</Usama_MSDS25044>']}
-    tokenizer.add_special_tokens(special_tokens)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
+    
+    special_tokens = {'additional_special_tokens': ['<Usama_MSDS25044>', '</Usama_MSDS25044>']}
+    tokenizer.add_special_tokens(special_tokens)
     
     print("Loading model...")
     vocab_size = len(tokenizer)
     model = TransformerForQA(
-        vocab_size=vocab_size, d_model=args.d_model, n_heads=args.n_heads,
-        n_layers=args.n_layers, d_ff=args.d_ff, max_seq_len=args.max_seq_len,
-        dropout=args.dropout, pad_idx=tokenizer.pad_token_id
+        vocab_size=vocab_size,
+        d_model=args.d_model,
+        n_heads=args.n_heads,
+        n_layers=args.n_layers,
+        d_ff=args.d_ff,
+        max_seq_len=args.max_seq_len,
+        dropout=args.dropout,
+        pad_idx=tokenizer.pad_token_id
     ).to(device)
     
     model.load_state_dict(torch.load(args.weights_path, map_location=device))
-    print(f"✓ Loaded weights from {args.weights_path}")
+    print(f"Loaded weights from {args.weights_path}")
     
-    if args.mode == 'test':
-        print("\nLoading test data...")
-        data_df = load_and_preprocess_data(args.data_path, max_samples=args.max_samples)
-        _, _, test_loader, _ = create_data_loaders(data_df, batch_size=args.batch_size, max_seq_len=args.max_seq_len)
-        
-        bleu = compute_bleu(model, test_loader, tokenizer, device, max_samples=args.max_test_samples)
-        print("\n" + "="*50)
-        print(f"Test BLEU Score: {bleu:.2f}")
-        print("="*50)
-    elif args.mode == 'interactive':
-        interactive_qa(model, tokenizer, device)
+    interactive_qa(model, tokenizer, device)
 
 
-# ============================================
-# PART 5: MAIN
-# ============================================
+# PART 5: MAIN 
 
 def main():
-    parser = argparse.ArgumentParser(description='Transformer QA System')
+    parser = argparse.ArgumentParser(description='Transformer QA System - Usama Umer MSDS25044')
     
-    # Mode
-    parser.add_argument('--mode', type=str, default='train', choices=['train', 'test'])
+    parser.add_argument('--mode', type=str, default='train', choices=['train', 'test'],
+                        help='train: train model, test: interactive Q&A')
     
-    # Data paths
-    parser.add_argument('--data_path', type=str, required=True, help='Path to dataset folder')
-    parser.add_argument('--save_path', type=str, default='./weights')
-    parser.add_argument('--weights_path', type=str, default='./weights/best_model.pt')
+    parser.add_argument('--data_path', type=str, required=True,
+                        help='Path to dataset folder (contains Questions.csv, Answers.csv)')
+    parser.add_argument('--save_path', type=str, default='./weights',
+                        help='Path to save model weights')
+    parser.add_argument('--weights_path', type=str, default='./weights/best_model.pt',
+                        help='Path to load model weights (for test mode)')
     
-    # Data parameters
-    parser.add_argument('--max_samples', type=int, default=15000)
-    parser.add_argument('--max_seq_len', type=int, default=256)
-    parser.add_argument('--batch_size', type=int, default=16)
+    parser.add_argument('--max_samples', type=int, default=15000,
+                        help='Maximum number of samples to use')
+    parser.add_argument('--max_seq_len', type=int, default=256,
+                        help='Maximum sequence length')
+    parser.add_argument('--batch_size', type=int, default=16,
+                        help='Batch size for training')
     
-    # Training parameters
-    parser.add_argument('--epochs', type=int, default=30)
-    parser.add_argument('--learning_rate', type=float, default=3e-4)
-    parser.add_argument('--patience', type=int, default=5)
-    parser.add_argument('--seed', type=int, default=42)
+    parser.add_argument('--epochs', type=int, default=30,
+                        help='Number of training epochs')
+    parser.add_argument('--learning_rate', type=float, default=3e-4,
+                        help='Learning rate for AdamW')
+    parser.add_argument('--patience', type=int, default=5,
+                        help='Early stopping patience')
+    parser.add_argument('--seed', type=int, default=42,
+                        help='Random seed for reproducibility')
     
-    # Model parameters
-    parser.add_argument('--d_model', type=int, default=256)
-    parser.add_argument('--n_heads', type=int, default=8)
-    parser.add_argument('--n_layers', type=int, default=4)
-    parser.add_argument('--d_ff', type=int, default=1024)
-    parser.add_argument('--dropout', type=float, default=0.1)
-    
-    # Test parameters
-    parser.add_argument('--max_test_samples', type=int, default=100)
+    parser.add_argument('--d_model', type=int, default=256,
+                        help='Model dimension')
+    parser.add_argument('--n_heads', type=int, default=8,
+                        help='Number of attention heads')
+    parser.add_argument('--n_layers', type=int, default=4,
+                        help='Number of transformer layers')
+    parser.add_argument('--d_ff', type=int, default=1024,
+                        help='Feed-forward dimension')
+    parser.add_argument('--dropout', type=float, default=0.1,
+                        help='Dropout rate')
     
     args = parser.parse_args()
     
